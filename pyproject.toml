@@ -1,0 +1,21 @@
+[project]
+name = "growingfit"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "anywidget>=0.9.18",
+    "ipykernel>=6.29",
+    "jupyterlab>=4.4",
+    "numpy>=2.2",
+    "plotly>=6.0",
+    "torch>=2.6",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
