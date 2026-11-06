@@ -1,121 +1,251 @@
-// Browser-driven rendering: exactly one pull -> evaluation -> Plotly -> paint
-// cycle at a time. Training never pushes intermediate frames to this view.
-
+// Request the latest model through custom comm messages, without widget state
+// throttling (which waits for kernel idle during an awaited training cell).
+// Only one evaluation and one drawing are outstanding; skip intermediate states.
 let plotlyPromise;
 
 function getPlotly(source) {
   if (!plotlyPromise) {
-    // Plotly's bundled UMD build can be loaded as a local ES module without
-    // eval(), a CDN, or a frontend/backend Plotly version mismatch.
-    const moduleSource =
-      "const module = { exports: {} }; const exports = module.exports;\n" +
+    const moduleSource = "const module = { exports: {} }; const exports = module.exports;\n" +
       source + "\nexport default module.exports;\n";
     const url = URL.createObjectURL(new Blob([moduleSource], { type: "text/javascript" }));
-    plotlyPromise = import(url)
-      .then((module) => module.default)
-      .catch((error) => {
-        plotlyPromise = undefined;
-        throw error;
-      })
-      .finally(() => URL.revokeObjectURL(url));
+    plotlyPromise = import(url).then((module) => module.default).catch((error) => {
+      plotlyPromise = undefined;
+      throw error;
+    }).finally(() => URL.revokeObjectURL(url));
   }
   return plotlyPromise;
 }
 
+function withTimeout(promise, milliseconds, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+function waitForPaint() {
+  return new Promise((resolve) => {
+    let animation;
+    let timer;
+    const finish = () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(animation);
+      resolve();
+    };
+    timer = setTimeout(finish, 100);
+    animation = requestAnimationFrame(finish);
+  });
+}
+
 export default {
   render({ model, el }) {
-    const plot = document.createElement("div");
+    let plot = document.createElement("div");
     plot.style.width = "100%";
     plot.style.minHeight = "800px";
     el.style.width = "100%";
+    el.style.position = "relative";
     el.replaceChildren(plot);
 
+    let plotly;
     let stopped = false;
     let completed = false;
-    let plotly;
+    let running = false;
+    let notice = null;
     let requestId = 0;
     let lastRevision = -1;
     let pending = null;
-    let delayTimer = null;
-    let finishDelay = null;
+    let latestFinal = null;
+    let staging = null;
+    let delayTimer;
+    let finishDelay;
+    let lastDrawMs = 100;
+    let droppedDraws = 0;
+    const clientId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 
-    const onMessage = (message) => {
-      if (message.type !== "frame" || !pending || message.request_id !== pending.id) return;
-      const resolve = pending.resolve;
+    const settle = (frame) => {
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      const { resolve, startedAt, attempt } = pending;
       pending = null;
-      resolve(message);
+      resolve(frame ? {
+        ...frame, request_ms: performance.now() - startedAt, retries: Math.max(0, attempt - 1),
+      } : null);
     };
-    model.on("msg:custom", onMessage);
+    const acceptFrame = (frame) => {
+      if (frame?.type !== "frame" || !pending || frame.client_id !== clientId ||
+          frame.request_id !== pending.id) return;
+      settle(frame);
+    };
+    const onResponse = () => acceptFrame(model.get("response"));
+    const onFinal = () => {
+      const figure = model.get("final_frame");
+      if (!figure || !Object.keys(figure).length) return;
+      latestFinal = { figure, revision: model.get("final_revision") ?? -1, done: true };
+      if (pending) settle(latestFinal);
+      else if (!running && !stopped && !completed) void run();
+    };
+    model.on("change:response", onResponse);
+    model.on("change:final_frame", onFinal);
+    // Also accept a directly delivered response from an older widget.
+    model.on("msg:custom", acceptFrame);
 
-    const pull = () => new Promise((resolve) => {
+    const pull = () => new Promise((resolve, reject) => {
       const id = ++requestId;
-      pending = { id, resolve };
-      model.send({ type: "pull", request_id: id, last_revision: lastRevision });
+      const resend = () => {
+        if (stopped || !pending || pending.id !== id) return;
+        // Recover an already received state even if its change event was missed.
+        onResponse();
+        if (!pending) return;
+        if (performance.now() - pending.startedAt >= 10000) {
+          pending = null;
+          reject(new Error("No renderer response within 10 seconds; see live_widget.render_stats for details."));
+          return;
+        }
+        pending.attempt++;
+        const request = {
+          client_id: clientId, request_id: id, last_revision: lastRevision, attempt: pending.attempt,
+        };
+        const retryDelay = Math.max(250, Math.min(1000, 3000 / model.get("target_fps")));
+        pending.timer = setTimeout(resend, retryDelay);
+        // save_changes() buffers subsequent updates until its previous comm
+        // gets an idle status. An awaited live-training cell can stay busy
+        // throughout the run, so every pull must use the unthrottled channel.
+        model.send({ type: "pull", ...request });
+      };
+      pending = { id, resolve, reject, startedAt: performance.now(), attempt: 0, timer: null, resend };
+      resend();
     });
 
     const delay = (milliseconds) => new Promise((resolve) => {
       finishDelay = resolve;
-      delayTimer = setTimeout(() => {
-        delayTimer = null;
-        finishDelay = null;
-        resolve();
-      }, milliseconds);
+      delayTimer = setTimeout(() => { finishDelay = null; resolve(); }, milliseconds);
     });
 
-    const draw = async (figure) => {
-      await plotly.react(plot, figure.data, figure.layout, figure.config);
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+    const discardPlot = (node) => {
+      if (!node) return;
+      node.remove();
+      if (plotly) {
+        try { plotly.purge(node); } catch { /* detached/unfinished Plotly instance */ }
+      }
     };
 
-    const run = async () => {
+    const draw = async (figure) => {
+      const startedAt = performance.now();
+      const candidate = document.createElement("div");
+      candidate.style.cssText = "position:absolute;left:0;top:0;width:100%;visibility:hidden;pointer-events:none";
+      staging = candidate;
+      el.appendChild(candidate);
       try {
-        plotly = await getPlotly(model.get("plotly_source"));
+        // Plotly mutates data/layout. Keep synchronized transport state immutable.
+        const copy = structuredClone(figure);
+        // Build in a fresh div; a stalled old Plotly.react cannot block the
+        // next graph. Keep the visible graph until the replacement is ready.
+        const budget = Math.max(1000, Math.min(5000, 8 * lastDrawMs));
+        await withTimeout(
+          plotly.newPlot(candidate, copy.data, copy.layout, copy.config),
+          budget, "Plotly frame timed out; requesting the latest model.",
+        );
+        if (stopped) { discardPlot(candidate); return null; }
+        candidate.style.position = "";
+        candidate.style.left = "";
+        candidate.style.top = "";
+        candidate.style.visibility = "";
+        candidate.style.pointerEvents = "";
+        const previous = plot;
+        plot = candidate;
+        staging = null;
+        discardPlot(previous);
+        await waitForPaint();
+        lastDrawMs = performance.now() - startedAt;
+        droppedDraws = 0;
+        notice?.remove();
+        notice = null;
+        return lastDrawMs;
+      } catch (error) {
+        if (staging === candidate) staging = null;
+        discardPlot(candidate);
+        model.send({
+          type: "render_retry", stage: "plotly", revision: lastRevision,
+          elapsed_ms: performance.now() - startedAt, error: String(error?.message ?? error),
+        });
+        if (++droppedDraws >= 3) throw error;
+        return null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (!document.hidden && pending) {
+        clearTimeout(pending.timer);
+        pending.resend();
+      } else if (!document.hidden && !running && !completed && !stopped) {
+        void run();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    const run = async () => {
+      if (running || stopped || completed) return;
+      running = true;
+      let stage = "load";
+      try {
+        plotly = await withTimeout(
+          getPlotly(model.get("plotly_source")), 30000, "Could not load Plotly within 30 seconds.",
+        );
         if (stopped) return;
-        const saved = model.get("final_frame");
-        if (saved && Object.keys(saved).length) {
-          await draw(saved);
-          completed = true;
-          return;
-        }
+        onFinal();
         while (!stopped) {
-          // The frame budget includes fetching, Python evaluation and drawing.
           const startedAt = performance.now();
-          const frame = await pull();
+          stage = "request";
+          const frame = latestFinal ?? await pull();
+          latestFinal = null;
           if (stopped || !frame) break;
           if (frame.error) throw new Error(frame.error);
-          if (frame.figure) await draw(frame.figure);
+          stage = "draw";
+          const drawMs = frame.figure ? await draw(frame.figure) : 0;
           if (stopped) break;
+          if (drawMs === null) continue; // Discard delayed state, fetch latest.
           lastRevision = frame.revision;
-          model.send({ type: "painted", revision: lastRevision, done: frame.done });
-          if (frame.done) {
-            completed = true;
-            break;
-          }
-          const interval = 1000 / model.get("target_fps");
-          const remaining = interval - (performance.now() - startedAt);
+          model.send({
+            type: "painted", client_id: clientId, revision: lastRevision, step: frame.step ?? null,
+            done: frame.done, request_ms: frame.request_ms ?? 0, draw_ms: drawMs,
+            total_ms: performance.now() - startedAt, retries: frame.retries ?? 0,
+            server: frame.timings ?? {},
+          });
+          if (frame.done) { completed = true; break; }
+          stage = "fps_wait";
+          const remaining = 1000 / model.get("target_fps") - (performance.now() - startedAt);
           if (remaining > 0) await delay(remaining);
-          // If drawing took longer than the budget, fetch the latest model
-          // immediately. Never try to catch up on skipped intermediate states.
         }
       } catch (error) {
         if (!stopped) {
           const message = String(error?.message ?? error);
-          plot.textContent = "Не удалось отрисовать график: " + message;
-          model.send({ type: "failed", error: message });
+          notice?.remove();
+          notice = document.createElement("div");
+          notice.textContent = "Plot stopped: " + message;
+          el.appendChild(notice);
+          model.send({ type: "failed", client_id: clientId, stage, revision: lastRevision, error: message });
         }
+      } finally {
+        running = false;
       }
     };
     void run();
 
     return () => {
       stopped = true;
-      if (delayTimer !== null) clearTimeout(delayTimer);
+      clearTimeout(delayTimer);
       finishDelay?.();
-      pending?.resolve(null);
-      pending = null;
-      model.off("msg:custom", onMessage);
-      if (!completed) model.send({ type: "closed" });
-      if (plotly) plotly.purge(plot);
+      settle(null);
+      model.off("change:response", onResponse);
+      model.off("change:final_frame", onFinal);
+      model.off("msg:custom", acceptFrame);
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (!completed) model.send({ type: "detached", client_id: clientId });
+      discardPlot(staging);
+      discardPlot(plot);
     };
   },
 };

@@ -1,5 +1,5 @@
-"""Общий код экспериментов и визуализаций ноутбуков."""
+"""Shared experiment and visualization code for the notebooks."""
 
-from .experiment import Config, Experiment, MLP, Snapshot, grow_hidden_layer, target_function
+from .experiment import Config, Experiment, MLP, Snapshot, target_function
 
-__all__ = ["Config", "Experiment", "MLP", "Snapshot", "grow_hidden_layer", "target_function"]
+__all__ = ["Config", "Experiment", "MLP", "Snapshot", "target_function"]

@@ -1,93 +1,55 @@
 # GrowingFit
 
-Python 3.12 + uv. Общий код ноутбуков — `notebooks/_shared/`.
+Python 3.12 + uv. Two notebooks compare approximations of the same function:
+
+- `notebooks/01_standard_mlp.ipynb` — a standard MLP trained with MSE.
+- `notebooks/02_cfm.ipynb` — conditional flow matching with endpoint residual prediction.
 
 ```powershell
 uv sync
-uv run jupyter lab notebooks/01_growing_mlp.ipynb
+uv run jupyter lab notebooks/01_standard_mlp.ipynb
 ```
 
-В VS Code выберите ядро `.venv\Scripts\python.exe`. После изменения общего кода
-перезапустите ядро и выполните все ячейки.
+In VS Code, select the `.venv\Scripts\python.exe` kernel. After changing shared code,
+restart the kernel and run all cells.
 
-Первый ноутбук аппроксимирует функцию
-`sin(1.7x) + 0.35 sin(5.3x) + 0.15x² − 0.3x` на `[-3, 3]`.
-MLP с одним скрытым ReLU-слоем последовательно растёт:
-**1 → 2 → 4 → 8 → 16 → 32 → 64 → 128 нейронов**.
-`group_sizes=(1, 1, 2, 4, 8, 16, 32, 64)` задаёт размеры групп: первая — начальная,
-остальные добавляются по очереди. Можно указать любое количество положительных
-размеров групп. Суммарная ширина, границы этапов и цвета графика вычисляются из списка.
-На каждом этапе выполняется `steps_per_stage=200` шагов Adam, обучается только новая группа.
-После этапа замораживаются её входящие веса, hidden bias и связи с выходом.
-Общий выходной bias обучается только на первом этапе и тоже замораживается.
-После последнего этапа все параметры заморожены.
+Both models have one hidden ReLU layer. All parameters are trained jointly.
+The shared `Config` specifies `hidden_size`, `total_steps`, `learning_rate`, `seed`,
+training and evaluation grid sizes, and domain bounds. The target function in
+`notebooks/_shared/experiment.py` is:
+`sin(1.7x) + 0.35 sin(5.3x) + 0.15x² − 0.3x`.
 
-Группы суммируют свой вклад в один линейный выход — это один скрытый слой.
-Каждая новая группа инициализируется случайно и учится компенсировать остаточную
-ошибку замороженной части. Для неё создаётся отдельный Adam только с новыми
-параметрами. При добавлении случайных выходных весов возможен скачок фита и лосса.
+The standard MLP receives `x` and predicts `f(x)` directly. CFM receives `[x, y_t]`
+and predicts the residual `f(x) − y_t`, where `y_t=(1−t)z+t*f(x)`, `z ~ N(0,1)`.
+CFM minimizes residual MSE. The network has no separate time input:
+for a deterministic target, `(x, y_t)` uniquely determines the residual.
 
-В выводе только два графика Plotly на всю ширину: MSE сверху, целевая функция
-и текущая аппроксимация снизу. Обучение идёт в отдельном фоновом потоке без пауз.
-Браузер запрашивает свежую модель только после завершения предыдущей отрисовки.
-Отдельный поток рендерера берёт согласованную копию параметров, выполняет evaluation
-и готовит кадр. Промежуточные состояния пропускаются, очередь кадров не создаётся.
-Следующий запрос делается после `Plotly.react` и с учётом `target_fps`: если весь
-цикл занял меньше периода кадра, браузер ждёт остаток; если больше — запрашивает сразу.
-После окончания обучения отрисовывается финальная модель и цикл останавливается.
-Моменты расширения отмечены пунктиром на графике лосса.
+The `FlowMatchingConfig` settings are independent:
 
-По умолчанию 8 этапов, всего 1600 шагов; `target_fps=10` ограничивает только отрисовку.
-Размеры групп, число шагов, seed и learning rate
-задаются в `Config(...)`, частота показа — в `target_fps`, целевая функция —
-в `notebooks/_shared/experiment.py`.
+- `eval_sampling_steps` — the number of Euler steps for evaluation and extrapolation.
+- `train_sampling_steps=None` — continuous time `t ~ Uniform(0, 1)`.
+- `train_sampling_steps=T` — time sampled from `{0, 1/T, …, (T−1)/T}`.
+  With `T=1`, training only sees `t=0`.
 
-Общий renderer — `_shared/pull_render.py` и `_shared/pull_plot.js`: небольшой
-anywidget с браузерным подтверждением кадра. Plotly.js берётся из установленного
-пакета, CDN не требуется. `experiment.history` хранит только реально подготовленные
-кадры; графики лосса отражают эти evaluation, а не требуют показать каждый шаг Adam.
-При остановке ячейки фоновое обучение завершается между полными итерациями.
+Sampling reconstructs velocity as `residual/(1−t)`.
+The sampler never accesses the target; the final network call occurs before `t=1`.
+CFM plots and shared extrapolation start at `y=0` for every `x`.
+Gaussian noise remains random during training.
 
-`notebooks/02_standard_mlp.ipynb` — отдельный эксперимент с обычной MLP сразу на
-128 ReLU-нейронах. Все параметры обучаются совместно 1600 шагов на тех же данных.
-Ноутбук запускается самостоятельно; настройки размера и числа шагов находятся
-в его ячейке `Config(...)`.
+Plotly shows MSE above the function approximation, using the full available width.
+Training runs in a separate thread. The renderer copies the latest model,
+evaluates it, and prepares a frame only when the browser requests one.
+The next request is sent after drawing finishes; `target_fps` limits
+the request frequency. Intermediate states are skipped, with no frame queue.
+The final model is displayed when training finishes.
 
-`notebooks/03_kink_aware_mlp.ipynb` — конкурент той же ширины на тех же данных и
-с той же исходной инициализацией. Каждая из 1600 итераций содержит weighted fitting
-(Adam для всех параметров) и затем repulsion (отдельный SGD только для скрытого слоя).
-Это 1600 fitting-обновлений плюс 1600 repulsion-подшагов, а не одинаковая с обычным
-MLP вычислительная стоимость. График лосса показывает обычный MSE после обоих подшагов.
+Frame requests use direct comm messages to avoid waiting for kernel `idle`
+during `ipywidgets` state synchronization. The latest response is stored in
+widget state. Plotly.js comes from the installed package, without a CDN.
+`experiment.history` contains only the evaluation snapshots prepared by the renderer.
 
-Сам метод находится в `notebooks/_shared/kink_training.py`: обычная архитектура
-`Linear → ReLU → Linear`, аналитические изломы `t=-b/w`, detached-веса fitting loss,
-Gaussian repulsion по парам. Неустойчивые и внешние изломы исключены. Репульсия
-учитывает чувствительность `-b/w` через обратную норму якобиана, ограничивает
-смещение излома и сохраняет норму пары `(w,b)`. Отдельно обучаемых координат изломов
-нет. При точном совпадении координат Gaussian repulsion имеет нулевой градиент.
-Данные и подключение к существующим графикам вынесены в отдельный адаптер
-`notebooks/_shared/kink_experiment.py`.
-
-`notebooks/04_annealed_weight_noise.ipynb` — MLP того же размера с убывающим шумом:
-аналитический KL на первых 1599 итерациях, MSE и строго нулевой шум на последней.
-Шум задаётся в выходных весах и bias, с нормировкой на норму текущих признаков,
-так что выходная дисперсия в каждой точке равна дисперсии шумного таргета.
-Это условный шум параметров для каждой точки, а не единый набор шумных весов
-на весь интервал. При совпадающих Gaussian-дисперсиях KL равен MSE/(2σ²), поэтому
-сам по себе такой точный матчинг не добавляет регуляризации к MSE.
-Косинусное расписание: `sigma_before_final + (sigma_start - sigma_before_final) *
-(1 + cos(pi * progress)) / 2`; настройки — `sigma_start`, `sigma_before_final`.
-Финальный шум всегда нулевой. На графике показаны KL и отдельно финальный MSE, средние функции
-и шумные реализации. Основная реализация — `_shared/annealed_weight_noise.py`.
-
-`notebooks/05_conditional_diffusion_mlp.ipynb` — условная диффузия с входом `[x, y_t]`.
-Один скрытый ReLU-слой на 512 нейронов, 3200 обновлений Adam, все параметры обучаемы.
-Сеть предсказывает чистый `y_0` по зашумлённому `y_t` и кондишону `x`; на обучении
-для каждой точки выбирается случайный уровень из восьми. Семплинг идёт из Gaussian
-шума за ровно 8 детерминированных DDIM-шагов с косинусным расписанием.
-У сети ровно два входа, без time embedding: `t` используется только шедулером.
-Для детерминированного таргета `y_0=f(x)` используется x0-prediction, не epsilon-prediction.
-Параметров 2049 вместо 1537 у обычной MLP на 512 нейронах.
-Графики показывают полный результат 8-шагового семплинга с фиксированным стартовым
-шумом; evaluation выполняет только рендерер. Реализация — `_shared/conditional_diffusion.py`
-и `_shared/diffusion_experiment.py`.
+Shared code lives in `notebooks/_shared/`: `experiment.py`,
+`conditional_flow_matching.py`, `flow_matching_experiment.py`,
+`visualization.py`, `pull_render.py`, `render_worker.py`, `pull_plot.js`
+and `extrapolation.py`. `show_extrapolation(experiment, padding_fraction=0.10)`
+plots the fit with additional padding on both sides of the training domain.
