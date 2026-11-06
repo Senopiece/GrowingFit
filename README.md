@@ -1,9 +1,13 @@
 # GrowingFit
 
-Python 3.12 + uv. Two notebooks compare approximations of the same function:
+Python 3.12 + uv. Three notebooks explore approximations of the same function:
 
 - `notebooks/01_standard_mlp.ipynb` — a standard MLP trained with MSE.
 - `notebooks/02_cfm.ipynb` — conditional flow matching with endpoint residual prediction.
+- `notebooks/03_cfm_vs_standard.ipynb` — 100 runs per method, final grid MSE
+  statistics, and side-by-side box plots with highlighted arithmetic means.
+  Both methods share the width, update count, learning rate, data, and seed IDs.
+  Completed runs are saved to `notebooks/outputs/cfm_vs_standard.csv` after each model.
 
 ```powershell
 uv sync
