@@ -4,10 +4,13 @@ Python 3.12 + uv. Three notebooks explore approximations of the same function:
 
 - `notebooks/01_standard_mlp.ipynb` — a standard MLP trained with MSE.
 - `notebooks/02_cfm.ipynb` — conditional flow matching with endpoint residual prediction.
-- `notebooks/03_cfm_vs_standard.ipynb` — 100 runs per method, final grid MSE
-  statistics, and side-by-side box plots with highlighted arithmetic means.
+- `notebooks/03_cfm_vs_standard.ipynb` — 100 runs per method at each hidden width
+  (32, 64, and 128), for 600 networks total. Final grid MSE statistics and paired
+  box plots with highlighted arithmetic means are reported separately for each width.
   Both methods share the width, update count, learning rate, data, and seed IDs.
   Completed runs are saved to `notebooks/outputs/cfm_vs_standard.csv` after each model.
+  Rerunning resumes missing width/method/seed combinations. Earlier single-width
+  results are preserved using their saved configuration to identify the width.
 
 ```powershell
 uv sync
