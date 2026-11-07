@@ -5,12 +5,23 @@ Python 3.12 + uv. Three notebooks explore approximations of the same function:
 - `notebooks/01_standard_mlp.ipynb` — a standard MLP trained with MSE.
 - `notebooks/02_cfm.ipynb` — conditional flow matching with endpoint residual prediction.
 - `notebooks/03_cfm_vs_standard.ipynb` — 100 runs per method at each hidden width
-  (32, 64, and 128), for 600 networks total. Final grid MSE statistics and paired
-  box plots with highlighted arithmetic means are reported separately for each width.
+  (32, 64, and 128), for 600 networks total. Each network trains for 32,000 updates,
+  saving the same trajectory at 1,000, 2,000, 4,000, 8,000, 16,000, and 32,000 steps.
+  Each CFM snapshot is evaluated with 1, 2, 4, 8, 16, 32, and 64 Euler steps.
+  Grid MSE statistics are grouped by training step, width, and evaluation setting;
+  box plots highlight arithmetic means and have a dropdown for all six training stages.
   Both methods share the width, update count, learning rate, data, and seed IDs.
-  Completed runs are saved to `notebooks/outputs/cfm_vs_standard.csv` after each model.
-  Rerunning resumes missing width/method/seed combinations. Earlier single-width
-  results are preserved using their saved configuration to identify the width.
+  Weights and training settings are saved atomically at every requested checkpoint
+  under `notebooks/outputs/cfm_vs_standard_checkpoints/<method>/width_<m>/seed_<s>/step_<n>.pt`.
+  Networks with all six compatible snapshots are skipped. Incomplete trajectories
+  restart from their seed; optimizer state is not restored. Older final-only weights
+  and CSV results remain untouched but cannot supply the missing intermediate snapshots.
+  A separate evaluation cell reloads checkpoints and writes
+  `notebooks/outputs/cfm_vs_standard_metrics.csv`, including the evaluation step
+  count, actual training step, and checkpoint path. A full batch produces 3,600
+  checkpoints and 14,400 metric rows. Metrics can be recomputed without training; the
+  evaluation grid and sampling-step list can change independently. The old
+  `cfm_vs_standard.csv` is left untouched.
 
 ```powershell
 uv sync
@@ -60,3 +71,4 @@ Shared code lives in `notebooks/_shared/`: `experiment.py`,
 `visualization.py`, `pull_render.py`, `render_worker.py`, `pull_plot.js`
 and `extrapolation.py`. `show_extrapolation(experiment, padding_fraction=0.10)`
 plots the fit with additional padding on both sides of the training domain.
+The comparison notebook uses `comparison.py` for checkpoint storage and evaluation.
