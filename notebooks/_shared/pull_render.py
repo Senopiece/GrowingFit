@@ -16,7 +16,6 @@ import traitlets
 
 from .experiment import Experiment
 from .render_worker import RenderJob, RenderWorker
-from .visualization import _make_figure
 
 
 @lru_cache(maxsize=1)
@@ -109,7 +108,7 @@ class _LiveSession:
             evaluated = perf_counter()
             experiment.history.append(snapshot)
             self.render_stage = "figure"
-            figure = _make_figure(experiment, snapshot)
+            figure = experiment.make_figure(snapshot)
             figure.update_layout(datarevision=revision, uirevision="growingfit-live")
             payload = figure.to_plotly_json()
             # Scatter styles are explicit; do not resend defaults for dozens

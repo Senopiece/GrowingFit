@@ -1,6 +1,6 @@
 # GrowingFit
 
-Python 3.12 + uv. Three notebooks explore approximations of the same function:
+Python 3.12 + uv. Notebooks for MLP and conditional flow matching experiments:
 
 - `notebooks/01_standard_mlp.ipynb` — a standard MLP trained with MSE.
 - `notebooks/02_cfm.ipynb` — conditional flow matching with endpoint residual prediction.
@@ -20,6 +20,22 @@ Python 3.12 + uv. Three notebooks explore approximations of the same function:
   count, actual training step, and checkpoint path. A full batch produces 3,600
   checkpoints and 14,400 metric rows. Metrics can be recomputed without training; the
   evaluation grid and sampling-step list can change independently.
+- `notebooks/04_fourier_mountain_cfm.ipynb` — fit an eroded 2D mountain heightmap
+  with Fourier coordinate features and a single-hidden-layer ReLU MLP trained
+  with CFM endpoint residuals. The default `source="reference"` loads the exact
+  hydraulic `eroded_height` saved in `smooth_chaos/noise.ipynb`. The input field
+  is reconstructed from its saved erosion difference. Both heightmaps and their
+  coordinate axes are bundled in `_shared/data/noise_hydraulic_terrain.npz`.
+  The copied generator and erosion definitions in `_shared/mountains.py` are
+  available for `source="generated"`; their parameters apply to generated targets.
+  Fixed sine/cosine bands use frequencies 1, 2, 4, 8, 16, 32 in four directions.
+  Training uses random mini-batches and normalized heights; inference uses
+  64 Euler steps from zero initial noise. A 96x96 live preview shows MSE, two 3D
+  surfaces, and a height-error map;
+  full-grid inference compares 3D surfaces in original height units. Weights,
+  Fourier buffers, the generated target, and normalization are saved together in
+  `notebooks/outputs/fourier_mountain_cfm.pt`; inference arrays are saved as NPZ.
+  Numba compiles the droplet-erosion loops on their first invocation.
 
 ```powershell
 uv sync
@@ -29,7 +45,7 @@ uv run jupyter lab notebooks/01_standard_mlp.ipynb
 In VS Code, select the `.venv\Scripts\python.exe` kernel. After changing shared code,
 restart the kernel and run all cells.
 
-Both models have one hidden ReLU layer. All parameters are trained jointly.
+The 1D standard and CFM models have one hidden ReLU layer. All parameters are trained jointly.
 The shared `Config` specifies `hidden_size`, `total_steps`, `learning_rate`, `seed`,
 training and evaluation grid sizes, and domain bounds. The target function in
 `notebooks/_shared/experiment.py` is:
@@ -70,3 +86,5 @@ Shared code lives in `notebooks/_shared/`: `experiment.py`,
 and `extrapolation.py`. `show_extrapolation(experiment, padding_fraction=0.10)`
 plots the fit with additional padding on both sides of the training domain.
 The comparison notebook uses `comparison.py` for checkpoint storage and evaluation.
+The 2D terrain notebook uses `mountains.py` for target generation and
+`fourier_mountain.py` for Fourier features, training, visualization, and checkpoints.

@@ -58,7 +58,7 @@ class ConditionalFlowMatching:
 
     @staticmethod
     def velocity(
-        model: FlowMatchingMLP, x: torch.Tensor, state: torch.Tensor, time: torch.Tensor
+        model: nn.Module, x: torch.Tensor, state: torch.Tensor, time: torch.Tensor
     ) -> torch.Tensor:
         # time must be strictly less than one.
         return model(x, state) / (1.0 - time)
@@ -66,18 +66,19 @@ class ConditionalFlowMatching:
     @torch.inference_mode()
     def sample(
         self,
-        model: FlowMatchingMLP,
+        model: nn.Module,
         x: torch.Tensor,
         *,
         initial_noise: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         """Exactly T model calls; the sampler never receives target values."""
+        state_shape = (x.shape[0], 1)
         if initial_noise is None:
-            state = torch.randn(x.shape, device=x.device, dtype=x.dtype, generator=generator)
+            state = torch.randn(state_shape, device=x.device, dtype=x.dtype, generator=generator)
         else:
-            if initial_noise.shape != x.shape:
-                raise ValueError("initial_noise must have the same (N, 1) shape as x.")
+            if initial_noise.shape != state_shape:
+                raise ValueError("initial_noise must have shape (N, 1), matching the condition batch size.")
             state = initial_noise.to(device=x.device, dtype=x.dtype).clone()
         steps = self.config.eval_sampling_steps
         dt = 1.0 / steps
@@ -104,7 +105,7 @@ class FlowMatchingTrainingStep:
 class FlowMatchingTrainer:
     def __init__(
         self,
-        model: FlowMatchingMLP,
+        model: nn.Module,
         flow: ConditionalFlowMatching,
         *,
         learning_rate: float = 0.01,

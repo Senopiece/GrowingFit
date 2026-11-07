@@ -87,6 +87,11 @@ class Experiment:
     def _make_model(self) -> MLP:
         return MLP(self.config.hidden_size)
 
+    def make_figure(self, snapshot: Snapshot):
+        from .visualization import _make_figure
+
+        return _make_figure(self, snapshot)
+
     def _begin(self) -> None:
         with self.model_lock:
             if self.started:
