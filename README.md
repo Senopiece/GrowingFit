@@ -30,11 +30,15 @@ Python 3.12 + uv. Notebooks for MLP and conditional flow matching experiments:
   available for `source="generated"`; their parameters apply to generated targets.
   Fixed sine/cosine bands use frequencies 1, 2, 4, 8, 16, 32 in four directions.
   Training uses random mini-batches and normalized heights; inference uses
-  64 Euler steps from zero initial noise. A 96x96 live preview shows MSE, two 3D
-  surfaces, and a height-error map;
+  64 Euler steps from zero initial noise. A 96x96 live preview shows MSE,
+  target/prediction heatmaps with the same height color scale, and a height-error map;
   full-grid inference compares 3D surfaces in original height units. Weights,
   Fourier buffers, the generated target, and normalization are saved together in
   `notebooks/outputs/fourier_mountain_cfm.pt`; inference arrays are saved as NPZ.
+  The baseline section trains a standard MSE MLP with the same Fourier features,
+  hidden width, mini-batches, and optimizer budget. Its weights are saved separately
+  as `fourier_mountain_standard.pt`. Full-grid MSE/MAE and shared-scale heatmaps
+  compare both predictions; arrays and metric summaries are saved as NPZ and JSON.
   Numba compiles the droplet-erosion loops on their first invocation.
 
 ```powershell
