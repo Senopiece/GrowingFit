@@ -14,14 +14,12 @@ Python 3.12 + uv. Three notebooks explore approximations of the same function:
   Weights and training settings are saved atomically at every requested checkpoint
   under `notebooks/outputs/cfm_vs_standard_checkpoints/<method>/width_<m>/seed_<s>/step_<n>.pt`.
   Networks with all six compatible snapshots are skipped. Incomplete trajectories
-  restart from their seed; optimizer state is not restored. Older final-only weights
-  and CSV results remain untouched but cannot supply the missing intermediate snapshots.
+  restart from their seed; optimizer state is not restored.
   A separate evaluation cell reloads checkpoints and writes
   `notebooks/outputs/cfm_vs_standard_metrics.csv`, including the evaluation step
   count, actual training step, and checkpoint path. A full batch produces 3,600
   checkpoints and 14,400 metric rows. Metrics can be recomputed without training; the
-  evaluation grid and sampling-step list can change independently. The old
-  `cfm_vs_standard.csv` is left untouched.
+  evaluation grid and sampling-step list can change independently.
 
 ```powershell
 uv sync
